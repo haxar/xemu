@@ -1347,7 +1347,7 @@ static void process_voice(MCPXAPUState *d,
 
         if (container_size_index == NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE_ADPCM) {
             //FIXME: Not sure how this behaves otherwise
-            assert(sample_size == NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S24);
+            // assert(sample_size == NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S24);
 
             unsigned int block_index = sample_pos / 65;
             unsigned int block_position = sample_pos % 65;
