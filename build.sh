@@ -13,10 +13,10 @@ package_windows() { # Script to prepare the windows exe
 }
 
 postbuild=''
-debug_opts='--enable-debug'
+debug_opts=''
 user_opts=''
-build_cflags='-O0 -g'
-job_count='4'
+build_cflags='-O3'
+job_count='12'
 
 while [ ! -z ${1} ]
 do
@@ -25,9 +25,9 @@ do
         job_count="${1:2}"
         shift
         ;;
-    '--release')
-        build_cflags='-O3'
-        debug_opts=''
+    '--debug')
+        build_cflags='-O0 -g'
+        debug_opts='--enable-debug'
         shift
         ;;
     *)

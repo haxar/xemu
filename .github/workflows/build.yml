@@ -30,11 +30,11 @@ jobs:
       run: |
         if "${{ matrix.configuration }}" == "Debug":
           print('Configuring for Debug')
-          print('::set-env name=BUILD_PARAM::')
+          print('::set-env name=BUILD_PARAM::--debug')
           print('::set-env name=ARTIFACT_NAME::xqemu-win-debug.zip')
         else:
           print('Configuring for Release')
-          print('::set-env name=BUILD_PARAM::--release')
+          print('::set-env name=BUILD_PARAM::')
           print('::set-env name=ARTIFACT_NAME::xqemu-win-release.zip')
     - name: Clone Tree
       uses: actions/checkout@v2
@@ -84,11 +84,11 @@ jobs:
       run: |
         if "${{ matrix.configuration }}" == "Debug":
           print('Configuring for Debug')
-          print('::set-env name=BUILD_PARAM::')
+          print('::set-env name=BUILD_PARAM::--debug')
           print('::set-env name=ARTIFACT_NAME::xqemu-ubuntu-debug')
         else:
           print('Configuring for Release')
-          print('::set-env name=BUILD_PARAM::--release')
+          print('::set-env name=BUILD_PARAM::')
           print('::set-env name=ARTIFACT_NAME::xqemu-ubuntu-release')
     - name: Clone Tree
       uses: actions/checkout@v2
@@ -128,11 +128,11 @@ jobs:
       run: |
         if "${{ matrix.configuration }}" == "Debug":
           print('Configuring for Debug')
-          print('::set-env name=BUILD_PARAM::')
+          print('::set-env name=BUILD_PARAM::--debug')
           print('::set-env name=ARTIFACT_NAME::xqemu-macos-debug')
         else:
           print('Configuring for Release')
-          print('::set-env name=BUILD_PARAM::--release')
+          print('::set-env name=BUILD_PARAM::')
           print('::set-env name=ARTIFACT_NAME::xqemu-macos-release')
     - name: Clone Tree
       uses: actions/checkout@v2
