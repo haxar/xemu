@@ -46,6 +46,7 @@
 #include "xemu-input.h"
 #include "xemu-settings.h"
 #include "xemu-shaders.h"
+//#include "xemu-timer.h"
 #include "xemu-version.h"
 
 #include "hw/xbox/smbus.h" // For eject, drive tray
@@ -64,8 +65,6 @@ void tcg_register_init_ctx(void); // tcg.c
 void xb_surface_gl_create_texture(DisplaySurface *surface);
 void xb_surface_gl_update_texture(DisplaySurface *surface, int x, int y, int w, int h);
 void xb_surface_gl_destroy_texture(DisplaySurface *surface);
-
-static void sleep_ns(int64_t ns);
 
 static int sdl2_num_outputs;
 static struct sdl2_console *sdl2_console;
@@ -1094,6 +1093,23 @@ static void update_fps(void)
     fps = 1000.0/avg;
 }
 
+#define USE_XEMU_TIMER 1
+#if !USE_XEMU_TIMER
+static void sleep_ns(int64_t ns);
+
+/* Note: only supports millisecond resolution on Windows */
+static void sleep_ns(int64_t ns)
+{
+#ifndef _WIN32
+        struct timespec sleep_delay, rem_delay;
+        sleep_delay.tv_sec = ns / 1000000000LL;
+        sleep_delay.tv_nsec = ns % 1000000000LL;
+        nanosleep(&sleep_delay, &rem_delay);
+#else
+        Sleep(ns / SCALE_MS);
+#endif
+}
+#endif
 void sdl2_gl_refresh(DisplayChangeListener *dcl)
 {
     struct sdl2_console *scon = container_of(dcl, struct sdl2_console, dcl);
@@ -1205,14 +1221,15 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     qemu_mutex_unlock_iothread();
     qemu_mutex_unlock_main_loop();
 
+#if !USE_XEMU_TIMER
     /*
      * Throttle to make sure swaps happen at 60Hz
      */
     static int64_t last_update = 0;
     int64_t deadline = last_update + 16666666;
 
-    int64_t sleep_acc = 0;
-    int64_t spin_acc = 0;
+//    int64_t sleep_acc = 0;
+//    int64_t spin_acc = 0;
 
 #ifndef _WIN32
     const int64_t sleep_threshold = 2000000;
@@ -1227,20 +1244,31 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
             if (time_remaining > sleep_threshold) {
                 // Try to sleep until the until reaching the sleep threshold.
                 sleep_ns(time_remaining - sleep_threshold);
-                sleep_acc += qemu_clock_get_ns(QEMU_CLOCK_REALTIME)-now;
+//                sleep_acc += qemu_clock_get_ns(QEMU_CLOCK_REALTIME)-now;
             } else {
                 // Simply spin to avoid extra delays incurred with swapping to
                 // another process and back in the event of being within
                 // threshold to desired event.
-                spin_acc++;
+//                spin_acc++;
             }
         } else {
-            DPRINTF("zzZz %g %ld\n", (double)sleep_acc/1000000.0, spin_acc);
+//            DPRINTF("zzZz %g %ld\n", (double)sleep_acc/1000000.0, spin_acc);
             last_update = now;
             break;
         }
     }
-
+# if 0
+static int64_t start = 0;//XXX
+int64_t end = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);//XXX
+fprintf(stderr,"sleep_ns: fps=%g start=%li end=%li diff=%li\n",fps,start,end,end-start);//XXX
+start = end;
+# endif
+#elif 0
+static int64_t start = 0;//XXX
+int64_t end = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);//XXX
+fprintf(stderr,"xemu_timer: fps=%g start=%li end=%li diff=%li\n",fps,start,end,end-start);//XXX
+start = end;
+#endif
 }
 
 void sdl2_gl_redraw(struct sdl2_console *scon)
@@ -1431,18 +1459,256 @@ static void *call_qemu_main(void *opaque)
     exit(status);
 }
 
-/* Note: only supports millisecond resolution on Windows */
-static void sleep_ns(int64_t ns)
+#if USE_XEMU_TIMER
+static struct QemuMutex xemu_timer_mutex;
+
+enum xemu_timer_type_t {
+    XEMU_TIMER_TYPE_DISABLED = 0,   /* reset deadline */
+    XEMU_TIMER_TYPE_TIME_OUT,       /* reset & increment deadline when behind */
+    XEMU_TIMER_TYPE_KEEP_UP,        /* increment deadline to keep up */
+};
+
+enum xemu_timer_state_t {
+    XEMU_TIMER_OK = 0,
+    XEMU_TIMER_CONTINUE,
+};
+
+struct xemu_timer_t {
+    const char *            name;
+    enum xemu_timer_type_t  type;
+    struct timespec         interval;
+    struct timespec         deadline;
+    int                     (*callback)(struct xemu_timer_t *);
+    struct {
+        int64_t             inc;
+        int64_t             elapsed;
+        int64_t             pos;
+        int64_t             begin;
+        int64_t             late;
+    }                       counter;
+};
+
+static void xemu_clock(struct timespec *tp);
+//static void xemu_clock_wall(struct timespec *tp);
+//static int64_t xemu_clock_now(void);
+static void xemu_clock_add(const struct timespec *ref, const struct timespec *sub, struct timespec *res);
+static void xemu_clock_sub(const struct timespec ref, const struct timespec *sub, struct timespec *res);
+static int64_t xemu_timer_deadline(struct xemu_timer_t *t);
+static void xemu_timer(struct timespec *timeout);
+
+static void xemu_clock(struct timespec *tp)
 {
-#ifndef _WIN32
-        struct timespec sleep_delay, rem_delay;
-        sleep_delay.tv_sec = ns / 1000000000LL;
-        sleep_delay.tv_nsec = ns % 1000000000LL;
-        nanosleep(&sleep_delay, &rem_delay);
+#if 0
+    clock_gettime(CLOCK_MONOTONIC_RAW, tp);
 #else
-        Sleep(ns / SCALE_MS);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+
+    tp->tv_sec  = now / 1000000000LL;
+    tp->tv_nsec = now % 1000000000LL;
 #endif
 }
+#if 0
+static void xemu_clock_wall(struct timespec *tp)
+{
+    clock_gettime(CLOCK_REALTIME, tp);
+}
+
+static int64_t xemu_clock_now(void)
+{
+    struct timespec tp;
+
+    xemu_clock(&tp);
+
+    return tp.tv_sec * 1000000000LL + tp.tv_nsec;
+}
+#endif
+static void xemu_clock_add(const struct timespec *ref, const struct timespec *add, struct timespec *res)
+{
+    assert(res);
+
+    if (ref && res != ref) *res = *ref;
+    if (add) {
+        res->tv_sec  += add->tv_sec;
+        res->tv_nsec += add->tv_nsec;
+    }
+    xemu_clock_sub(*res, NULL, res);
+}
+
+static void xemu_clock_sub(const struct timespec ref, const struct timespec *sub, struct timespec *res)
+{
+    int64_t sec;
+
+    assert(res);
+
+    if (sub) {
+        if (res != sub) *res = *sub;
+    } else {
+        res->tv_sec  = 0;
+        res->tv_nsec = 0;
+    }
+    if (ref.tv_nsec < res->tv_nsec) {
+        sec = (res->tv_nsec - ref.tv_nsec) / 1000000000LL + 1;
+        res->tv_nsec -= sec * 1000000000LL;
+        res->tv_sec  += sec;
+    }
+    if (ref.tv_nsec - res->tv_nsec > 1000000000LL) {
+        sec = (ref.tv_nsec - res->tv_nsec) / 1000000000LL;
+        res->tv_nsec += sec * 1000000000LL;
+        res->tv_sec  -= sec;
+    }
+    res->tv_sec  = ref.tv_sec  - res->tv_sec;
+    res->tv_nsec = ref.tv_nsec - res->tv_nsec;
+    if (res->tv_sec < 0) res->tv_nsec = 1000000000LL - res->tv_nsec;
+}
+
+static int xemu_timer_callback_vsync(struct xemu_timer_t *t)
+{
+    (void)t;
+
+    sdl2_gl_refresh(&sdl2_console[0].dcl);
+
+    return XEMU_TIMER_OK;
+}
+
+static struct xemu_timer_t xemu_timers[] = {
+#define TIMER(a,b,c,d) { \
+        .name = #a, \
+        .type = XEMU_TIMER_TYPE_##b, \
+        .interval = { (c), (d) }, \
+        .callback = xemu_timer_callback_##a, \
+    }
+    TIMER(vsync, KEEP_UP, 0, 16666666), /* 60 Hz */
+#undef TIMER
+};
+
+static int64_t xemu_timer_deadline(struct xemu_timer_t *t)
+{
+    struct timespec now;
+    struct timespec res;
+    int64_t ret;
+
+    qemu_mutex_lock(&xemu_timer_mutex);
+
+    switch (t->type) {
+    case XEMU_TIMER_TYPE_TIME_OUT:
+        xemu_clock(&now);
+        xemu_clock_sub(t->deadline, &now, &res);
+        if (res.tv_sec  < -1 ||
+            (res.tv_sec <  0 &&
+            res.tv_nsec >  t->interval.tv_nsec)) {
+            t->deadline = now;
+        }
+        break;
+    case XEMU_TIMER_TYPE_KEEP_UP:
+        if (!t->counter.begin) xemu_clock(&t->deadline);
+        break;
+    default:
+        xemu_clock(&t->deadline);
+        break;
+    }
+
+    ret = t->deadline.tv_sec * 1000000000LL + t->deadline.tv_nsec;
+
+    if (!t->counter.begin) {
+        t->counter.elapsed = 0;
+        t->counter.pos     = ret;
+        t->counter.begin   = ret;
+    } else if (t->counter.inc && ret > t->counter.pos + t->counter.inc) {
+        t->counter.late = ret - t->counter.pos - t->counter.inc;
+#if 1
+        fprintf(stderr,
+            "Timer: '%s' was late by: %lli.%.09lli seconds\n",
+            t->name,
+            t->counter.late / 1000000000LL,
+            t->counter.late % 1000000000LL);
+#endif
+        t->counter.begin += ret - t->counter.pos;
+        t->counter.pos    = ret;
+    }
+
+    qemu_mutex_unlock(&xemu_timer_mutex);
+
+    return ret;
+}
+
+static void xemu_timer(struct timespec *timeout)
+{
+    struct timespec now;
+    struct timespec res;
+    struct timespec delay;
+    struct xemu_timer_t *t;
+    int i;
+    int ret;
+
+    qemu_mutex_lock(&xemu_timer_mutex);
+
+    for (xemu_clock(&now), i = 0; i < ARRAY_SIZE(xemu_timers); i++) {
+        t = &xemu_timers[i];
+        if (t->type <= XEMU_TIMER_TYPE_DISABLED) {
+            if (t->counter.begin) memset(&t->counter, 0, sizeof(t->counter));
+            t->deadline = now;
+            continue;
+        }
+        xemu_clock_sub(t->deadline, &now, &res);
+        if (res.tv_sec < 0) {
+#if 0
+            fprintf(stderr, "Timer: '%s': processing timer timeout...\n", t->name);
+#endif
+            assert(t->callback);
+            ret = t->callback(t);
+            delay = now;
+            xemu_clock(&now);
+            if (t->type <= XEMU_TIMER_TYPE_DISABLED || ret != XEMU_TIMER_OK) {
+                if (t->counter.begin) memset(&t->counter, 0, sizeof(t->counter));
+                t->deadline = now;
+                continue;
+            }
+            xemu_clock_sub(now, &delay, &delay);
+#if 1
+            if (delay.tv_sec > t->interval.tv_sec ||
+                (delay.tv_sec == t->interval.tv_sec && delay.tv_nsec > t->interval.tv_nsec)) {
+                fprintf(stderr, "Timer: '%s': execution delay: %li.%09li seconds\n", t->name, delay.tv_sec, delay.tv_nsec);
+            }
+#endif
+            if (t->type == XEMU_TIMER_TYPE_TIME_OUT) {
+                xemu_clock_sub(t->deadline, &now, &res);
+                if (res.tv_sec  < -t->interval.tv_sec - 1 ||
+                    (res.tv_sec < -t->interval.tv_sec &&
+                    res.tv_nsec >  t->interval.tv_nsec)) {
+                    t->deadline = now;
+                }
+            }
+            t->counter.inc      = t->interval.tv_sec * 1000000000LL + t->interval.tv_nsec;
+            t->counter.elapsed += t->counter.inc;
+            t->counter.pos     += t->counter.inc;
+            xemu_clock_add(&t->deadline, &t->interval, &t->deadline);
+            xemu_clock_sub(t->deadline, &now, &res);
+            if (res.tv_sec < 0) {
+                res.tv_sec  = 0;
+                res.tv_nsec = 0;
+            }
+        }
+        if (timeout &&
+            ((!timeout->tv_sec && !timeout->tv_nsec) ||
+            (res.tv_sec <  timeout->tv_sec ||
+            (res.tv_sec == timeout->tv_sec &&
+            res.tv_nsec <  timeout->tv_nsec)))) {
+            *timeout = res;
+            if (!res.tv_sec && !res.tv_nsec) timeout = NULL;
+        }
+#if 0
+        if (res.tv_sec || res.tv_nsec) {
+            fprintf(stderr, "Timer: '%s': next timer timeout in: %li.%09li seconds\n",
+                t->name,
+                res.tv_sec,
+                res.tv_nsec);
+        }
+#endif
+    }
+
+    qemu_mutex_unlock(&xemu_timer_mutex);
+}
+#endif
 
 int main(int argc, char **argv)
 {
@@ -1470,9 +1736,31 @@ int main(int argc, char **argv)
 
     DPRINTF("Main thread: initializing app\n");
 
+#if !USE_XEMU_TIMER
     while (1) {
         sdl2_gl_refresh(&sdl2_console[0].dcl);
     }
+#else
+    struct xemu_timer_t *vsync = &xemu_timers[0];
+    int64_t begin;
+    int64_t now;
+
+    qemu_mutex_init(&xemu_timer_mutex);
+
+    begin = xemu_timer_deadline(vsync);
+
+    while (1) {
+        struct timespec timeout = { 0, 0 };
+
+        now = xemu_timer_deadline(vsync);
+        (void)begin, (void)now;
+
+        xemu_timer(&timeout);
+        nanosleep(&timeout, NULL);
+    }
+
+    qemu_mutex_destroy(&xemu_timer_mutex);
+#endif
 
     // rcu_unregister_thread();
 }
